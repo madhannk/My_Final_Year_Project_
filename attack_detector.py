@@ -1,56 +1,68 @@
 from collections import defaultdict, deque
 import time
 from logger import log_attack
-from config import (
-    DOS_PACKET_THRESHOLD,
-    DOS_TIME_WINDOW,
-    SUSPICIOUS_PACKET_RATE,
-    MIN_ATTACK_DURATION,
-    ALERT_COOLDOWN
-)
+from config import *
 
 packet_times = defaultdict(deque)
 attack_start = {}
 last_alert_time = {}
 
 def cleanup(now):
-    inactive = [ip for ip, times in packet_times.items()
-                if times and now - times[-1] > DOS_TIME_WINDOW * 2]
-    for ip in inactive:
-        packet_times.pop(ip, None)
-        attack_start.pop(ip, None)
-        last_alert_time.pop(ip, None)
+    inactive = [
+        key for key, times in packet_times.items()
+        if times and now - times[-1] > DOS_TIME_WINDOW * 2
+    ]
+    for key in inactive:
+        packet_times.pop(key, None)
+        attack_start.pop(key, None)
+        last_alert_time.pop(key, None)
 
-def detect_attacks(src_ip, protocol):
+def detect_attacks(src_ip, protocol, port):
     now = time.time()
-    packet_times[src_ip].append(now)
 
-    # Sliding window cleanup
-    while packet_times[src_ip] and now - packet_times[src_ip][0] > DOS_TIME_WINDOW:
-        packet_times[src_ip].popleft()
+    # 🔴 FIX: ICMP must NOT include port in key
+    if protocol == "ICMP":
+        key = (src_ip, protocol)
+    else:
+        key = (src_ip, protocol, port)
 
-    rate = len(packet_times[src_ip])
+    packet_times[key].append(now)
 
+    while packet_times[key] and now - packet_times[key][0] > DOS_TIME_WINDOW:
+        packet_times[key].popleft()
+
+    rate = len(packet_times[key])
     cleanup(now)
 
-    # Cooldown check
-    if src_ip in last_alert_time and now - last_alert_time[src_ip] < ALERT_COOLDOWN:
+    if key in last_alert_time and now - last_alert_time[key] < ALERT_COOLDOWN:
         return None
 
-    # ---- DoS Detection ----
+    # -------- DoS Detection --------
     if rate >= DOS_PACKET_THRESHOLD:
-        attack_start.setdefault(src_ip, now)
-        if now - attack_start[src_ip] >= MIN_ATTACK_DURATION:
-            log_attack(src_ip, f"DoS Attack ({protocol})")
-            last_alert_time[src_ip] = now
-            packet_times[src_ip].clear()
-            attack_start.pop(src_ip, None)
-            return "DoS Attack"
+        attack_start.setdefault(key, now)
 
-    # ---- Suspicious Activity ----
+        if now - attack_start[key] >= MIN_ATTACK_DURATION:
+            if rate >= SEVERITY_HIGH_RATE:
+                severity = "HIGH"
+            elif rate >= SEVERITY_MEDIUM_RATE:
+                severity = "MEDIUM"
+            else:
+                severity = "LOW"
+
+            attack_type = f"DoS Attack | Protocol:{protocol} | Port:{port} | Severity:{severity}"
+            log_attack(src_ip, attack_type)
+            last_alert_time[key] = now
+
+            packet_times[key].clear()
+            attack_start.pop(key, None)
+
+            return attack_type
+
+    # -------- Suspicious Traffic --------
     if rate >= SUSPICIOUS_PACKET_RATE:
-        log_attack(src_ip, f"Suspicious Traffic ({protocol})")
-        last_alert_time[src_ip] = now
-        return "Suspicious Activity"
+        attack_type = f"Suspicious Traffic | Protocol:{protocol} | Port:{port}"
+        log_attack(src_ip, attack_type)
+        last_alert_time[key] = now
+        return attack_type
 
     return None
