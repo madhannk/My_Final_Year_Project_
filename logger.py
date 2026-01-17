@@ -27,3 +27,13 @@ def fetch_attacks(limit=100):
         data = cursor.fetchall()
         conn.close()
         return data
+
+def count_attacks():
+    with db_lock:
+        conn = sqlite3.connect(DB_NAME)
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM attacks")
+        count = cursor.fetchone()[0]
+        conn.close()
+        return count
+
